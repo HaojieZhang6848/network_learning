@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "mini_overlay",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/mini_overlay/mini_overlay.go",
+            "console": "integratedTerminal",
+            "args": [
+                "--cidr",
+                "192.168.124.1",
+                "--local",
+                ":51820",
+                "--peer",
+                "192.168.1.90:51820",
+                "--psk",
+                "n3/gwp3KiRj1ZXy9t3vMDIEriQcf6QyBXDlT9ml0+CQ="
+            ],
+            "asRoot": true,
+            "env": {
+                "PATH": "/home/osboxes/.goenv/versions/1.23.11/bin:${env:PATH}"
+            }
+        }
+    ]
+}
