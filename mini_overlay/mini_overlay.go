@@ -8,15 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/songgao/water"
 	"golang.org/x/crypto/nacl/secretbox"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -25,7 +25,7 @@ const (
 )
 
 type box struct {
-	key   [32]byte
+	key    [32]byte
 	enable bool
 }
 
@@ -57,35 +57,53 @@ func (b *box) open(dst, pkt []byte) ([]byte, bool) {
 }
 
 func must(err error) {
-	if err != nil { log.Fatal(err) }
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
 	var (
-		ifCIDR   = flag.String("cidr", "192.168.124.1/24", "virtual interface CIDR (e.g. 192.168.124.1/24)")
-		local    = flag.String("local", ":51820", "local UDP addr (host:port)")
-		peer     = flag.String("peer", "", "peer UDP addr (host:port)")
-		pskB64   = flag.String("psk", "", "base64 32-byte pre-shared key (optional)")
-		ifName   = flag.String("ifname", "", "TUN name (optional)")
+		ifCIDR = flag.String("cidr", "192.168.124.1/24", "virtual interface CIDR (e.g. 192.168.124.1/24)")
+		local  = flag.String("local", ":51820", "local UDP addr (host:port)")
+		peer   = flag.String("peer", "", "peer UDP addr (host:port)")
+		pskB64 = flag.String("psk", "", "base64 32-byte pre-shared key (optional)")
+		ifName = flag.String("ifname", "", "TUN name (optional)")
 	)
 	flag.Parse()
-	fmt.Println("mini-overlay starting...")
+	klog.Info("mini-overlay starting...")
 
 	// 初始化 TUN
 	cfg := water.Config{DeviceType: water.TUN}
-	if *ifName != "" { cfg.Name = *ifName }
+	if *ifName != "" {
+		cfg.Name = *ifName
+	}
 	ifce, err := water.New(cfg)
 	must(err)
-	fmt.Println("TUN:", ifce.Name())
+	klog.Info("TUN:", ifce.Name())
 
-	// 配置 TUN IP/MTU（Linux/macOS 常见命令；Windows 需改用 netsh 或 Wintun 工具）
-	// Linux:
-	//   sudo ip addr add 192.168.124.1/24 dev <ifce>
-	//   sudo ip link set dev <ifce> up mtu 1300
-	// macOS:
-	//   sudo ifconfig <ifce> 192.168.124.1 192.168.124.1 netmask 255.255.255.0 mtu 1300 up
-	fmt.Printf("Remember to set IP and MTU, e.g. Linux:\n  sudo ip addr add %s dev %s && sudo ip link set dev %s up mtu %d\n\n",
-		*ifCIDR, ifce.Name(), ifce.Name(), innerMTU)
+	// 自动配置 TUN IP/MTU
+	klog.Infof("Configuring TUN interface %s with %s and MTU %d...", ifce.Name(), *ifCIDR, innerMTU)
+
+	// 添加 IP 地址
+	cmd1 := exec.Command("ip", "addr", "add", *ifCIDR, "dev", ifce.Name())
+	if err := cmd1.Run(); err != nil {
+		log.Printf("Failed to add IP address: %v", err)
+		klog.Infof("Please run manually: sudo ip addr add %s dev %s", *ifCIDR, ifce.Name())
+	} else {
+		klog.Infof("IP address %s added to %s", *ifCIDR, ifce.Name())
+	}
+
+	// 设置接口状态为 up 并配置 MTU
+	cmd2 := exec.Command("ip", "link", "set", "dev", ifce.Name(), "up", "mtu", fmt.Sprintf("%d", innerMTU))
+	if err := cmd2.Run(); err != nil {
+		log.Printf("Failed to bring interface up: %v", err)
+		klog.Infof("Please run manually: sudo ip link set dev %s up mtu %d", ifce.Name(), innerMTU)
+	} else {
+		klog.Infof("Interface %s is up with MTU %d", ifce.Name(), innerMTU)
+	}
+
+	klog.Info("")
 
 	// 准备 UDP
 	laddr, err := net.ResolveUDPAddr("udp", *local)
@@ -93,13 +111,13 @@ func main() {
 	conn, err := net.ListenUDP("udp", laddr)
 	must(err)
 	defer conn.Close()
-	fmt.Println("UDP listen on", conn.LocalAddr())
+	klog.Info("UDP listen on", conn.LocalAddr())
 
 	var raddr *net.UDPAddr
 	if *peer != "" {
 		raddr, err = net.ResolveUDPAddr("udp", *peer)
 		must(err)
-		fmt.Println("Peer:", raddr.String())
+		klog.Info("Peer:", raddr.String())
 	}
 
 	// 预共享密钥（可选）
@@ -107,12 +125,14 @@ func main() {
 	if *pskB64 != "" {
 		raw, err := base64.StdEncoding.DecodeString(*pskB64)
 		must(err)
-		if len(raw) != 32 { log.Fatalf("psk length must be 32, got %d", len(raw)) }
+		if len(raw) != 32 {
+			log.Fatalf("psk length must be 32, got %d", len(raw))
+		}
 		copy(b.key[:], raw)
 		b.enable = true
-		fmt.Println("Encryption: secretbox enabled")
+		klog.Info("Encryption: secretbox enabled")
 	} else {
-		fmt.Println("Encryption: disabled (PSK not provided)")
+		klog.Info("Encryption: disabled (PSK not provided)")
 	}
 
 	// ctrl+c 退出
@@ -130,13 +150,12 @@ func main() {
 				return
 			}
 			pkt := buf[:n]
-			// // 简单丢弃大于内层 MTU 的包（生产建议做分片/PMTU）
-			// if len(pkt) > innerMTU {
-			// 	continue
-			// }
 			out = out[:0]
 			sealed, err := b.seal(out, pkt)
-			if err != nil { log.Println("seal:", err); continue }
+			if err != nil {
+				log.Println("seal:", err)
+				continue
+			}
 			if raddr == nil {
 				continue // 没配置对端就不发
 			}
@@ -159,7 +178,7 @@ func main() {
 			// 如果没指定 peer，则首次来包的人即为 peer（简易自发现）
 			if raddr == nil {
 				raddr = from
-				fmt.Println("Peer learned:", raddr.String())
+				klog.Info("Peer learned:", raddr.String())
 			}
 			plain, ok := b.open(out[:0], buf[:n])
 			if !ok {
@@ -171,22 +190,6 @@ func main() {
 		}
 	}()
 
-	// 简单 keepalive（打洞/维持 NAT 映射）
-	go func() {
-		t := time.NewTicker(15 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			if raddr != nil {
-				// 发送零长密文也行；这里发 1 字节随机“探活”
-				p := []byte{byte(rand.Intn(256))}
-				msg, err := b.seal(nil, p)
-				if err == nil {
-					_, _ = conn.WriteToUDP(msg, raddr)
-				}
-			}
-		}
-	}()
-
 	<-stop
-	fmt.Println("Bye.")
+	klog.Info("Bye.")
 }

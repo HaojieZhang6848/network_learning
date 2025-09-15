@@ -9,11 +9,11 @@
             "console": "integratedTerminal",
             "args": [
                 "--cidr",
-                "192.168.124.1",
+                "192.168.124.1/24",
                 "--local",
                 ":51820",
                 "--peer",
-                "192.168.1.90:51820",
+                "192.168.1.102:51820",
                 "--psk",
                 "n3/gwp3KiRj1ZXy9t3vMDIEriQcf6QyBXDlT9ml0+CQ="
             ],
